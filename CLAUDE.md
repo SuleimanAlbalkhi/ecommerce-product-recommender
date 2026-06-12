@@ -55,12 +55,22 @@ popularity_recommender(df, all_histories, current_user_id=None, category=None, t
 → if category given, filter first; pad with random samples if fewer than top_n results
 ```
 
-### With history
+### With history (category-segmented profiles)
 ```
+build_category_profiles(df, tfidf_matrix, history_indices, decay=0.9)
+→ group history clicks by product category (one profile vector per viewed category)
+→ time decay applies ONLY within each category's own click subsequence
+  (a click in Books never ages the Electronics profile — avoids centroid dilution)
+→ per category: normalized exponentially weighted mean of TF-IDF vectors
+
 history_recommender(df, tfidf_matrix, history_indices, category=None, top_n=10, decay=0.9)
-→ exponentially weighted mean of TF-IDF vectors (recent views weighted higher)
-→ cosine_similarity(weighted_mean, tfidf_matrix)
-→ return top_n indices (exclude already-seen)
+→ category given + profile exists → rank that category's products by cosine similarity
+→ category given + NO profile     → return empty DataFrame; the app falls back to
+  popularity_recommender for that category (with an st.info message)
+→ no category → proportional slots: split top_n across viewed categories proportional
+  to view counts (largest remainder, ties to most recently clicked category); fill each
+  quota from that category's own profile; unfillable slots spill to the next category
+→ always exclude already-seen indices
 ```
 
 ## What NOT to do

@@ -9,6 +9,8 @@ from data_loader import load_data
 from recommender import build_tfidf_matrix, history_recommender, popularity_recommender
 
 DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "processed", "ecommerceDataset_clean.csv")
+# I need some fake users here. The popularity ranking only works
+# when there are other users who already viewed something.
 SIMULATED_USERS = ["Alice", "Bob", "Carol", "Dave"]
 CATEGORY_COLORS = {
     "Household": "#E74C3C",
@@ -27,11 +29,14 @@ def load_products() -> pd.DataFrame:
 @st.cache_resource
 def cached_tfidf(_df: pd.DataFrame):
     """Build and cache the TF-IDF matrix (leading underscore tells Streamlit not to hash _df)."""
+    # I use cache_resource and not cache_data. The matrix is big,
+    # so I want to build it one time and share it, not copy it around.
     return build_tfidf_matrix(_df)
 
 
 def placeholder_image(category: str) -> io.BytesIO:
     """Return a solid-colour PNG BytesIO for a product card."""
+    # the dataset has no product images, so I draw a simple colored box instead
     color = CATEGORY_COLORS.get(category, "#95A5A6")
     img = Image.new("RGB", (300, 150), color)
     draw = ImageDraw.Draw(img)
@@ -68,6 +73,8 @@ def render_sidebar(categories: list[str]) -> tuple[str, str | None]:
 
 def brief(text: str, max_chars: int = 80) -> str:
     """Return the first sentence of text, capped at max_chars characters."""
+    # only for the look: when every card shows about the same text length,
+    # the grid stays nice and even
     if not isinstance(text, str):
         return ""
     sentence = text.split(".")[0].strip()
@@ -83,6 +90,8 @@ def render_product_card(row: pd.Series, idx: int) -> None:
     st.markdown(f"**{row['name']}**")
     st.write(brief(row["description"]))
     if st.button("View", key=f"view_{idx}"):
+        # I save every product only once. If I would count repeat clicks,
+        # one single product could dominate the recommendations.
         if idx not in st.session_state["history"]:
             st.session_state["history"].append(idx)
         st.rerun()
@@ -97,8 +106,8 @@ def main() -> None:
     _, tfidf_matrix = cached_tfidf(df)
     categories = sorted(df["category"].dropna().unique().tolist())
 
-    # render_sidebar runs before init_session_state, so it reads histories
-    # defensively via .get() — the selected user may have no entry yet
+    # the sidebar runs before init_session_state, so the selected user
+    # maybe has no history entry yet. That is why render_sidebar uses .get().
     user_id, selected_category = render_sidebar(categories)
     init_session_state(user_id)
 
@@ -110,7 +119,21 @@ def main() -> None:
         recs = history_recommender(
             df, tfidf_matrix, history, category=selected_category, top_n=10
         )
-        if len(recs) < 10:
+        if recs.empty and selected_category:
+            # the user has no clicks in this category yet, so there is no
+            # profile to match against. Popular products are the best guess.
+            st.info(f"No history in {selected_category} yet — showing popular products.")
+            recs = popularity_recommender(
+                df,
+                st.session_state["histories"],
+                current_user_id=user_id,
+                category=selected_category,
+                top_n=10,
+            )
+        # the category filter plus removing already seen products can leave
+        # less than 10 results. I show a short info text, so the half empty
+        # grid does not look like a bug.
+        elif len(recs) < 10:
             st.info(f"Only {len(recs)} new recommendations available for this filter.")
     else:
         label = f"Popular in {selected_category}" if selected_category else "Popular with other users"

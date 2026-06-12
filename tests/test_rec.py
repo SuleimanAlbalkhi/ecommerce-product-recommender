@@ -1,7 +1,12 @@
 import numpy as np
 import pandas as pd
 import pytest
-from recommender import build_tfidf_matrix, history_recommender, popularity_recommender
+from recommender import (
+    build_category_profiles,
+    build_tfidf_matrix,
+    history_recommender,
+    popularity_recommender,
+)
 
 PRODUCTS = [
     ("Electronics", "wireless bluetooth headphones noise cancelling"),
@@ -74,9 +79,12 @@ def test_history_excludes_seen(df, tfidf):
 
 
 def test_history_single_item(df, tfidf):
+    # recommendations stay inside the viewed categories now. Books has
+    # three products and one is already seen, so only two can come back.
     result = history_recommender(df, tfidf, history_indices=[7], top_n=3)
-    assert len(result) == 3
+    assert len(result) == 2
     assert 7 not in result.index
+    assert (result["category"] == "Books").all()
 
 
 def test_history_preserves_original_index(df, tfidf):
@@ -84,12 +92,14 @@ def test_history_preserves_original_index(df, tfidf):
     assert result.index.isin(df.index).all()
 
 
-def test_history_filters_by_category(df, tfidf):
-    # history items are Electronics; filter to Books anyway
+def test_history_filter_without_history_is_empty(df, tfidf):
+    # history items are Electronics, filter is Books. There is no Books
+    # profile, so the function returns empty and the app falls back to
+    # the popularity list.
     result = history_recommender(
         df, tfidf, history_indices=[0, 1], category="Books", top_n=3
     )
-    assert (result["category"] == "Books").all()
+    assert len(result) == 0
 
 
 def test_history_single_item_decay_irrelevant(df, tfidf):
@@ -123,3 +133,35 @@ def test_history_decay_weights_recent():
     _, mini_tfidf = build_tfidf_matrix(mini_df)
     result = history_recommender(mini_df, mini_tfidf, history_indices=[0, 2], decay=0.0, top_n=1)
     assert result.index.tolist() == [3]
+
+
+def test_profiles_one_vector_per_category(df, tfidf):
+    # mixed history over three categories must give exactly three profiles
+    profiles = build_category_profiles(df, tfidf, history_indices=[0, 4, 7])
+    assert set(profiles) == {"Electronics", "Clothing", "Books"}
+
+
+def test_decay_only_within_category(df, tfidf):
+    # a Books click between two Electronics clicks must not change the
+    # Electronics weights. The profile has to match the one built from
+    # the Electronics clicks alone.
+    mixed = build_category_profiles(df, tfidf, history_indices=[0, 7, 1], decay=0.9)
+    pure = build_category_profiles(df, tfidf, history_indices=[0, 1], decay=0.9)
+    assert np.allclose(mixed["Electronics"], pure["Electronics"])
+
+
+def test_mixed_history_no_dilution(df, tfidf):
+    # this is the centroid dilution fix: a click in another category must
+    # not change the recommendations inside a category at all.
+    mixed = history_recommender(df, tfidf, history_indices=[0, 7], category="Electronics", top_n=3)
+    pure = history_recommender(df, tfidf, history_indices=[0], category="Electronics", top_n=3)
+    assert mixed.index.tolist() == pure.index.tolist()
+
+
+def test_proportional_slots(df, tfidf):
+    # two Electronics clicks and one Books click on top_n=3 should give
+    # two Electronics slots and one Books slot
+    result = history_recommender(df, tfidf, history_indices=[0, 7, 1], top_n=3)
+    counts = result["category"].value_counts()
+    assert counts.get("Electronics", 0) == 2
+    assert counts.get("Books", 0) == 1

@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Tooling caches
+.pytest_cache/
+
+# Secrets / local config
+.env
+.streamlit/secrets.toml

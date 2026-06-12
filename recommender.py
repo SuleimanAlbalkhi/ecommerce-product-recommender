@@ -27,7 +27,7 @@ def popularity_recommender(
     category: str | None = None,
     top_n: int = 10,
 ) -> pd.DataFrame:
-    """Rank products by view count across all other users; return top_n most viewed. Rows beyond the ranked set are filled with a deterministic (seeded) sample."""
+    """Rank products by other users' view counts; pad with a seeded sample if needed."""
     counts: Counter = Counter()
     for uid, hist in all_histories.items():
         if uid == current_user_id:
@@ -90,7 +90,7 @@ def _allocate_slots(
     slots = {cat: int(q) for cat, q in quotas.items()}
     leftover = top_n - sum(slots.values())
     # remainder ties go to the category the user clicked most recently,
-    # because that is the freshest signal about his current interest
+    # because that is the freshest signal about their current interest
     order = sorted(
         quotas,
         key=lambda cat: (quotas[cat] - slots[cat], last_seen[cat]),

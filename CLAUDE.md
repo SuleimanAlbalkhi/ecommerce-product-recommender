@@ -9,9 +9,10 @@ Streamlit app (Python only, no backend) that demonstrates product recommendation
 
 ## Stack (exact versions)
 - Python 3.14
-- streamlit>=1.35
+- streamlit>=1.49
 - pandas                  (CSV loading)
 - scikit-learn            (TfidfVectorizer, cosine_similarity)
+- scipy                   (csr_matrix type hints; installed as a scikit-learn dependency)
 - numpy
 - pytest                  (always run after changes)
 - Pillow                  (placeholder product images)
@@ -37,7 +38,8 @@ pytest tests/ -v -k "test_name"  # run a single test
 - `@st.cache_data` for data loading
 - `st.session_state["history"]` → list of product indices the user clicked
 - `st.session_state["user_id"]` → simulated user (dropdown in sidebar)
-- Keep each function under 30 lines
+- Keep functions short — aim for under 30 lines; UI wiring (`app.main()`) and the
+  slot-mixing `history_recommender` may exceed it
 
 ## Data
 - App consumes `data/processed/ecommerceDataset_clean.csv` (UTF-8, header row, 27,715 rows)

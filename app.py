@@ -12,6 +12,8 @@ DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "processed", "ecomme
 # I need some fake users here. The popularity ranking only works
 # when there are other users who already viewed something.
 SIMULATED_USERS = ["Alice", "Bob", "Carol", "Dave"]
+TOP_N = 10
+GRID_COLS = 5
 CATEGORY_COLORS = {
     "Household": "#E74C3C",
     "Books": "#5BAD6F",
@@ -34,17 +36,20 @@ def cached_tfidf(_df: pd.DataFrame):
     return build_tfidf_matrix(_df)
 
 
-def placeholder_image(category: str) -> io.BytesIO:
-    """Return a solid-colour PNG BytesIO for a product card."""
-    # the dataset has no product images, so I draw a simple colored box instead
+@st.cache_data
+def placeholder_image(category: str) -> bytes:
+    """Return solid-colour PNG bytes for a product card."""
+    # the dataset has no product images, so I draw a simple colored box
+    # instead. There is one image per category, so I cache the four PNGs
+    # and do not encode them again on every rerun. I return bytes and not
+    # BytesIO, because cache_data can not pickle a BytesIO object.
     color = CATEGORY_COLORS.get(category, "#95A5A6")
     img = Image.new("RGB", (300, 150), color)
     draw = ImageDraw.Draw(img)
     draw.text((10, 65), category, fill="white")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
+    return buf.getvalue()
 
 
 def init_session_state(user_id: str) -> None:
@@ -85,12 +90,12 @@ def brief(text: str, max_chars: int = 80) -> str:
 
 def render_product_card(row: pd.Series, idx: int) -> None:
     """Display one product tile; clicking View adds idx to history."""
-    st.image(placeholder_image(row["category"]), use_container_width=True)
+    st.image(placeholder_image(row["category"]), width="stretch")
     st.caption(f"**{row['category']}**")
     st.markdown(f"**{row['name']}**")
     st.write(brief(row["description"]))
     if st.button("View", key=f"view_{idx}"):
-        # I save every product only once. If I would count repeat clicks,
+        # I save every product only once. If I counted repeat clicks,
         # one single product could dominate the recommendations.
         if idx not in st.session_state["history"]:
             st.session_state["history"].append(idx)
@@ -117,7 +122,7 @@ def main() -> None:
         label = f"Recommended in {selected_category}" if selected_category else "Recommended for you"
         st.subheader(label)
         recs = history_recommender(
-            df, tfidf_matrix, history, category=selected_category, top_n=10
+            df, tfidf_matrix, history, category=selected_category, top_n=TOP_N
         )
         if recs.empty and selected_category:
             # the user has no clicks in this category yet, so there is no
@@ -128,12 +133,12 @@ def main() -> None:
                 st.session_state["histories"],
                 current_user_id=user_id,
                 category=selected_category,
-                top_n=10,
+                top_n=TOP_N,
             )
         # the category filter plus removing already seen products can leave
-        # less than 10 results. I show a short info text, so the half empty
-        # grid does not look like a bug.
-        elif len(recs) < 10:
+        # less than TOP_N results. I show a short info text, so the half
+        # empty grid does not look like a bug.
+        elif len(recs) < TOP_N:
             st.info(f"Only {len(recs)} new recommendations available for this filter.")
     else:
         label = f"Popular in {selected_category}" if selected_category else "Popular with other users"
@@ -143,12 +148,12 @@ def main() -> None:
             st.session_state["histories"],
             current_user_id=user_id,
             category=selected_category,
-            top_n=10,
+            top_n=TOP_N,
         )
 
-    cols = st.columns(5)
+    cols = st.columns(GRID_COLS)
     for i, (idx, row) in enumerate(recs.iterrows()):
-        with cols[i % 5]:
+        with cols[i % GRID_COLS]:
             render_product_card(row, idx)
 
 

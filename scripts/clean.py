@@ -1,27 +1,30 @@
 """Dataset cleaning pipeline for data/raw/ecommerceDataset.csv.
 
-The numbered labels below (2.x / R*) are the step IDs printed in the log output.
+The numbered labels below (2.x / R*) are the step IDs printed in the log
+output, listed in execution order.
 
-Phase 1 — clean()
-  2.0  Repair UTF-8 bytes that were read as latin-1 (e.g. Ã¢â€šÂ¬ → €)
-  2.1  Fix CP1252 mojibake (e.g. â€™ → ')
-  2.2  Drop rows with empty / NaN descriptions
-  2.3  Drop exact (category, description) duplicates
-  2.4  Drop descriptions that occur in more than one category (cross-category conflict)
-  2.5  Normalise whitespace and tabs (\\t, \\r, \\n → space; repeated spaces → one)
-  2.6  Resolve HTML entities (&amp; → &, &lt; → < etc.)
-  2.7  Strip URLs (http://, www.) and e-mail addresses
+Phase 1: clean()
+  2.1  Drop rows with empty / NaN descriptions
+  2.2  Clean every description text:
+       a) repair UTF-8 bytes that were read as latin-1 (e.g. Ã¢â€šÂ¬ → €)
+       b) fix CP1252 mojibake (e.g. â€™ → ')
+       c) resolve HTML entities (&amp; → &, &lt; → < etc.)
+       d) strip URLs (http://, www.) and e-mail addresses
+       e) normalise whitespace and tabs (\\t, \\r, \\n → space; repeated spaces → one)
+  2.3  Drop descriptions that occur in more than one category (cross-category conflict)
+  2.4  Drop exact (category, description) duplicates
 
-Phase 2 — refine()  [applied after clean()]
+Phase 2: refine()  [applied after clean()]
   R1  Truncate descriptions >500 chars at the last sentence boundary; dedup again afterwards
-  R3  Add 'name' column — product name extracted from the leading part of the description
+  R2  Add 'name' column: product name extracted from the leading part of the description
+
+Short descriptions are kept on purpose. The extracted name alone gives
+enough TF-IDF signal, so a minimum length filter is not needed.
 
 Input:  data/raw/ecommerceDataset.csv             (no header, ~50,000 rows, latin-1)
 Output: data/processed/ecommerceDataset_clean.csv (UTF-8)
 Columns: category, name, description
 """
-
-from __future__ import annotations
 
 import html
 import re
@@ -36,7 +39,9 @@ OUT_DIR = ROOT / "data" / "processed"
 OUT = OUT_DIR / "ecommerceDataset_clean.csv"
 
 
-# cp1252 C1 control range → correct Unicode characters
+# map from broken cp1252 bytes to the correct unicode characters.
+# I wrote this map myself instead of using the ftfy library, because
+# the broken characters in this dataset are few and well known.
 CP1252_C1_MAP = {
     0x80: "€", 0x82: "‚", 0x83: "ƒ", 0x84: "„",
     0x85: "…", 0x86: "†", 0x87: "‡", 0x88: "ˆ",
@@ -52,7 +57,7 @@ EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 WS_RE = re.compile(r"\s+")
 
 # Product-name separators, discovered by studying 400+ examples (100/category).
-# Order does NOT determine priority — the earliest match in the text wins.
+# Order does NOT determine priority. The earliest match in the text wins.
 # Tuples of (compiled_pattern, include_period_in_name)
 _NAME_SEPS: list[tuple[re.Pattern[str], bool]] = [
     # Books section headers
@@ -92,6 +97,8 @@ _NAME_SEPS: list[tuple[re.Pattern[str], bool]] = [
 
 def _fix_utf8_mojibake(s: str) -> str:
     """Repair UTF-8 bytes that were mistakenly decoded as latin-1."""
+    # only some rows have this double encoding problem. For normal text
+    # the encode/decode fails and I simply keep the original string.
     try:
         return s.encode("latin-1").decode("utf-8")
     except (UnicodeDecodeError, UnicodeEncodeError):
@@ -99,7 +106,7 @@ def _fix_utf8_mojibake(s: str) -> str:
 
 
 def clean_description(s: str) -> str:
-    """Apply the text-level cleaning steps (2.0, 2.1, 2.5–2.7) to one description."""
+    """Apply the text-level cleaning steps (2.2 a-e) to one description."""
     s = _fix_utf8_mojibake(s)
     s = s.translate(CP1252_C1_MAP)
     s = html.unescape(s)
@@ -136,9 +143,9 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     mask_empty = df["description"].fillna("").str.strip().eq("")
     n_empty = int(mask_empty.sum())
     df = df.loc[~mask_empty].copy()
-    log(f"2.2 dropped empty/NaN descriptions: {n_empty}")
+    log(f"2.1 dropped empty/NaN descriptions: {n_empty}")
 
-    log("2.1/2.5/2.6/2.7 cleaning descriptions ...")
+    log("2.2 cleaning descriptions ...")
     df["description"] = df["description"].map(clean_description)
 
     mask_empty2 = df["description"].eq("")
@@ -153,13 +160,13 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     n_conflict_rows = int(mask_conflict.sum())
     df = df.loc[~mask_conflict].copy()
     log(
-        f"2.4 dropped cross-category duplicates: "
+        f"2.3 dropped cross-category duplicates: "
         f"{len(conflict_descs)} descriptions, {n_conflict_rows} rows"
     )
 
     before = len(df)
     df = df.drop_duplicates(subset=["category", "description"], keep="first").copy()
-    log(f"2.3 dropped exact (cat,desc) duplicates: {before - len(df):,}")
+    log(f"2.4 dropped exact (cat,desc) duplicates: {before - len(df):,}")
 
     log(f"    rows after clean(): {len(df):,}  (from {n0:,})")
     return df
@@ -167,11 +174,16 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
 def truncate_at_sentence(s: str, max_len: int = 500) -> str:
     """Truncate s to at most max_len chars, cutting at the latest sentence-like boundary."""
+    # 500 characters are enough. A very long description gets too much
+    # weight in the TF-IDF similarity and pushes other products away.
     if len(s) <= max_len:
         return s
 
     prefix = s[:max_len]
 
+    # I try to cut at a real sentence end first. If there is none, I take
+    # a weaker break like a comma. A cut in the middle of a word is the
+    # last option.
     for separator in [". ", "! ", "? ", "; ", ", ", ".", ",", " "]:
         pos = prefix.rfind(separator)
         if pos != -1:
@@ -189,13 +201,14 @@ def refine(df: pd.DataFrame) -> pd.DataFrame:
         df.loc[mask_long, "description"].map(truncate_at_sentence)
     )
     log(f"R1 flag_long (>500 chars) truncated at sentence boundary: {n_long:,}")
-    # Truncation can create new (category, description) duplicates — remove them
+    # Truncation can create new (category, description) duplicates, so I
+    # remove them one more time
     before = len(df)
     df = df.drop_duplicates(subset=["category", "description"], keep="first").copy()
     log(f"   post-truncation dedup: {before - len(df)} rows removed")
 
     df["name"] = df["description"].map(extract_product_name)
-    log("R3 product_name column added")
+    log("R2 product_name column added")
     return df[["category", "name", "description"]]
 
 
@@ -208,6 +221,8 @@ def main() -> int:
         names=["category", "description"],
         dtype=str,
         encoding="latin-1",
+        # without this, pandas reads text like "None" or "NA" as missing
+        # values and real products would get lost
         keep_default_na=False,
         na_values=[""],
     )
